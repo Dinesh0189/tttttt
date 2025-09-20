@@ -192,7 +192,7 @@
     </div>
     
     <!-- User ID display -->
-    <div id="user-id-display" class="fixed bottom-4 right-4 text-xs text-secondary bg-[--card-bg] p-2 rounded-lg opacity-70"></div>
+    <div id="user-id-display" class="fixed bottom-4 right-4 text-xs text-secondary bg-[--card-bg] p-2 rounded-lg opacity-70 hidden"></div>
 
     <!-- MODALS -->
     <div id="project-modal" class="modal-container">
@@ -267,23 +267,11 @@
     </div>
     
     <script type="module">
-        // --- FIREBASE IMPORTS ---
-        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
-        import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
-        import { getFirestore, doc, setDoc, onSnapshot } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
-        import { setLogLevel } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
-
-        // Set Firestore log level for debugging
-        setLogLevel('debug');
-
         // --- PROJECTS SCRIPT ---
         // Encapsulate all logic to prevent global pollution
         (function() {
 
             let proData = {};
-            let firebase = { app: null, db: null, auth: null, userId: null, dataUnsubscribe: null };
-            let isFirebaseReady = false; 
-            let isInitialLoad = true;
 
             const defaultProData = {
                 projects: [
@@ -293,7 +281,10 @@
             };
 
             function escapeHtml(unsafe) {
-                if (!unsafe) return '';
+                // Ensure the input is a string before calling replace
+                if (typeof unsafe !== 'string' || !unsafe) {
+                    return '';
+                }
                 return unsafe
                     .replace(/&/g, "&amp;")
                     .replace(/</g, "&lt;")
@@ -302,75 +293,17 @@
                     .replace(/'/g, "&#039;");
             }
 
-            // --- DATA PERSISTENCE (HYBRID LOCAL + FIREBASE) ---
+            // --- DATA PERSISTENCE (LOCAL STORAGE) ---
             function saveData() {
                 try {
-                    if (!Array.isArray(proData.projects)) proData.projects = [];
                     localStorage.setItem('proPlusData', JSON.stringify(proData));
-                    syncDataWithFirestore();
+                    console.log("Data saved to localStorage successfully.");
                 } catch (e) {
                     console.error("Error saving data to localStorage:", e);
                 }
             }
 
-            async function syncDataWithFirestore() {
-                if (!firebase.userId || !isFirebaseReady) {
-                    if (!isFirebaseReady) console.log("Firebase not ready, skipping cloud sync.");
-                    return;
-                }
-                try {
-                    const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
-                    // FIX: Corrected the document path to have an even number of segments.
-                    const docRef = doc(firebase.db, `artifacts/${appId}/users/${firebase.userId}/data/proPlusData`);
-                    console.log("Attempting to sync to Firestore document:", docRef.path);
-                    await setDoc(docRef, proData, { merge: true });
-                } catch (error) {
-                    console.error("Error syncing data to Firestore:", error);
-                    showUserAlert("Error syncing data to the cloud. Please try again.", "danger");
-                }
-            }
-
-            // --- INITIALIZATION ---
-            document.addEventListener('DOMContentLoaded', () => {
-                initializeFirebase();
-                bindUniversalEventListeners();
-            });
-
-            function initializeFirebase() {
-                try {
-                    const firebaseConfig = JSON.parse(typeof __firebase_config !== 'undefined' ? __firebase_config : '{}');
-                    firebase.app = initializeApp(firebaseConfig);
-                    firebase.db = getFirestore(firebase.app);
-                    firebase.auth = getAuth(firebase.app);
-
-                    onAuthStateChanged(firebase.auth, async (user) => {
-                        if (user) {
-                            firebase.userId = user.uid;
-                            await setupDataListener();
-                        } else {
-                            const token = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
-                            try {
-                                if (token) {
-                                    await signInWithCustomToken(firebase.auth, token);
-                                } else {
-                                    await signInAnonymously(firebase.auth);
-                                }
-                            } catch (e) {
-                                console.error("Authentication failed, falling back to anonymous", e);
-                                await signInAnonymously(firebase.auth);
-                            }
-                        }
-                    });
-                } catch (e) {
-                    console.error("Firebase initialization failed. Using local fallback.", e);
-                    isFirebaseReady = false;
-                    loadDataFromLocalStorage();
-                    initializeAppUI();
-                    showUserAlert("Could not connect to the database. Using local storage.", "warning");
-                }
-            }
-
-            function loadDataFromLocalStorage() {
+            function loadData() {
                 try {
                     const localData = localStorage.getItem('proPlusData');
                     if (localData) {
@@ -383,63 +316,15 @@
                 } catch (e) {
                     console.error("Failed to load or parse local data. Using default data.", e);
                     proData = JSON.parse(JSON.stringify(defaultProData));
-                    showUserAlert("Failed to load local data. Your projects may be reset.", "danger");
                 }
             }
-
-            async function setupDataListener() {
-                if (firebase.dataUnsubscribe) firebase.dataUnsubscribe();
-
-                const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
-                // FIX: Corrected the document path to have an even number of segments.
-                const docRef = doc(firebase.db, `artifacts/${appId}/users/${firebase.userId}/data/proPlusData`);
-                console.log("Listening to Firestore document:", docRef.path);
-
-                firebase.dataUnsubscribe = onSnapshot(docRef, (docSnap) => {
-                    if (docSnap.exists()) {
-                        console.log("Loaded data from Firestore.");
-                        const remoteData = docSnap.data();
-                        proData = {
-                            ...proData,
-                            ...(remoteData || {}),
-                        };
-                        localStorage.setItem('proPlusData', JSON.stringify(proData));
-                    } else {
-                        console.log("No data in Firestore. Checking local backup.");
-                        loadDataFromLocalStorage();
-                        isFirebaseReady = true;
-                        saveData(); 
-                    }
-
-                    if (isInitialLoad) {
-                        initializeAppUI();
-                        isInitialLoad = false;
-                    } else {
-                         const projectsContainer = document.getElementById('projects-container');
-                         if (projectsContainer) {
-                             handleFilterSortChange();
-                         }
-                    }
-                    isFirebaseReady = true;
-                }, (error) => {
-                    console.error("Error listening to Firestore. Falling back to local data.", error);
-                    isFirebaseReady = false;
-                    loadDataFromLocalStorage();
-                    if (isInitialLoad) {
-                        initializeAppUI();
-                        isInitialLoad = false;
-                    }
-                    showUserAlert("Real-time updates failed. You may be offline.", "warning");
-                });
-            }
-
-            function initializeAppUI() {
+            
+            // --- INITIALIZATION ---
+            document.addEventListener('DOMContentLoaded', () => {
+                loadData();
+                bindUniversalEventListeners();
                 renderProjects();
-                const userIdDisplay = document.getElementById('user-id-display');
-                if (userIdDisplay) {
-                    userIdDisplay.textContent = `User ID: ${firebase.userId}`;
-                }
-            }
+            });
 
             function showUserAlert(message, type = "info") {
                 const modalId = 'alert-modal';
@@ -453,7 +338,6 @@
                 if (titleEl) titleEl.textContent = type === "danger" ? "Error" : (type === "warning" ? "Warning" : "Information");
                 if (messageEl) messageEl.textContent = message;
 
-                // Clear existing classes and add new ones based on type
                 if (iconEl) {
                     iconEl.className = 'w-6 h-6 mr-2';
                     if (type === "danger") iconEl.classList.add('text-red-500');
@@ -474,17 +358,17 @@
                 on('task-form', 'submit', handleTaskFormSubmit);
                 on('alert-ok-btn', 'click', () => closeModal('alert-modal'));
                 
-                // This part is the most critical fix for dynamic buttons
                 document.getElementById('confirmation-modal')?.addEventListener('click', (e) => {
                     const target = e.target.closest('button');
                     if (!target) return;
             
-                    if (target.id === 'confirm-btn' && window.confirmAction) window.confirmAction();
-                    if (target.id === 'cancel-btn') closeModal('confirmation-modal');
-                    
-                    // These are for potential future features, kept for robustness
-                    if (target.id === 'merge-btn' && window.importMergeAction) window.importMergeAction();
-                    if (target.id === 'overwrite-btn' && window.importOverwriteAction) window.importOverwriteAction();
+                    if (target.id === 'confirm-btn' && window.confirmAction) {
+                        window.confirmAction();
+                        closeModal('confirmation-modal');
+                    }
+                    if (target.id === 'cancel-btn') {
+                        closeModal('confirmation-modal');
+                    }
                 });
 
                 document.querySelectorAll('.modal-overlay').forEach(overlay => {
@@ -507,14 +391,12 @@
             // --- PROJECTS PAGE ---
             function updateAndRefreshProjects() {
                 if (!Array.isArray(proData.projects)) proData.projects = [];
-                const hasContainer = !!document.getElementById('projects-container');
-                if (hasContainer) handleFilterSortChange();
-                saveData();
+                handleFilterSortChange();
+                saveData(); // Save data to localStorage after every change
             }
 
             function renderProjects() {
-                const container = document.getElementById('projects-container');
-                if (container) handleFilterSortChange();
+                handleFilterSortChange();
             }
 
             window.handleFilterSortChange = () => {
@@ -540,7 +422,7 @@
                 projectsToDisplay.sort((a, b) => {
                     switch (sortValue) {
                         case 'deadline':
-                            const dateA = a.deadline ? new Date(a.deadline) : new Date(8640000000000000); // Max date if invalid
+                            const dateA = a.deadline ? new Date(a.deadline) : new Date(8640000000000000);
                             const dateB = b.deadline ? new Date(b.deadline) : new Date(8640000000000000);
                             return dateA - dateB;
                         case 'name_asc': return a.name.localeCompare(b.name);
@@ -586,7 +468,7 @@
                         <label for="${escapeHtml(task.id)}" class="flex items-center cursor-pointer text-sm">
                             <input type="checkbox" id="${escapeHtml(task.id)}" ${task.done ? 'checked' : ''} onchange="toggleProjectTask('${escapeHtml(project.id)}', '${escapeHtml(task.id)}')" class="hidden">
                             <span class="checkbox-custom ${task.done ? 'checked' : ''}"></span>
-                            <span class="priority-indicator priority-${escapeHtml(task.priority)}"></span>
+                            <span class="priority-indicator priority-${escapeHtml(String(task.priority))}"></span>
                             <span class="${task.done ? 'line-through text-secondary' : ''}">${escapeHtml(task.text)}</span>
                         </label>
                     </div>
@@ -810,7 +692,11 @@
 
                 openModal('confirmation-modal');
             }
-
+            
+            window.refreshApp = () => {
+                handleFilterSortChange();
+            };
+            
         })();
     </script>
 </body>
